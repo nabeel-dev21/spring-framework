@@ -37,13 +37,15 @@ import org.springframework.http.converter.HttpMessageConversionException;
  */
 final class MultipartParser {
 
-	private static final byte[] CR_LF = {'\r', '\n'};
+	private static final byte CR = '\r';
+
+	private static final byte LF = '\n';
+
+	private static final byte[] CR_LF = {CR, LF};
 
 	private static final byte HYPHEN = '-';
 
 	private static final byte[] TWO_HYPHENS = {HYPHEN, HYPHEN};
-
-	private static final String HEADER_ENTRY_SEPARATOR = "\\r\\n";
 
 	private static final Log logger = LogFactory.getLog(MultipartParser.class);
 
@@ -385,8 +387,9 @@ final class MultipartParser {
 
 		/**
 		 * Parses the list of buffers into a {@link HttpHeaders} instance.
-		 * Converts the joined buffers into a string using ISO=8859-1, and parses
-		 * that string into key and values.
+		 * Each header line must be terminated by {@code CR LF} and hold a
+		 * name/value separator, or the message is rejected with an
+		 * {@link HttpMessageConversionException}.
 		 */
 		private HttpHeaders parseHeaders() {
 			if (this.buffers.isEmpty()) {
@@ -396,20 +399,59 @@ final class MultipartParser {
 			this.buffers.clear();
 			String string = joined.toString(MultipartParser.this.headersCharset);
 			DataBuffers.release(joined);
-			String[] lines = string.split(HEADER_ENTRY_SEPARATOR);
+
 			HttpHeaders result = new HttpHeaders();
-			for (String line : lines) {
-				int idx = line.indexOf(':');
-				if (idx != -1) {
-					String name = line.substring(0, idx);
-					String value = line.substring(idx + 1);
-					while (value.startsWith(" ")) {
-						value = value.substring(1);
+			int length = string.length();
+			int lineStart = 0;
+			for (int i = 0; i < length; i++) {
+				char c = string.charAt(i);
+				if (c == LF) {
+					if (i == lineStart || string.charAt(i - 1) != CR) {
+						MultipartParser.this.handleException("Invalid header: line contains a bare LF", null);
+						return HttpHeaders.EMPTY;
 					}
-					result.add(name, value);
+					parseHeaderLine(result, string, lineStart, i - 1);
+					lineStart = i + 1;
+				}
+				else if (c == CR && (i + 1 == length || string.charAt(i + 1) != LF)) {
+					MultipartParser.this.handleException("Invalid header: line contains a bare CR", null);
+					return HttpHeaders.EMPTY;
 				}
 			}
+			if (lineStart != length) {
+				MultipartParser.this.handleException("Invalid header: headers not terminated by CR LF", null);
+			}
 			return result;
+		}
+
+		/**
+		 * Parses a single header line into a name/value pair added to
+		 * {@code headers}.
+		 */
+		private void parseHeaderLine(HttpHeaders headers, String string, int start, int end) {
+			if (start == end) {
+				return;
+			}
+			int colonIdx = string.indexOf(':', start);
+			if (colonIdx <= start || colonIdx >= end) {
+				MultipartParser.this.handleException(
+						"Invalid header: no name/value separator found in \"" + string.substring(start, end) + "\"", null);
+				return;
+			}
+			String name = string.substring(start, colonIdx);
+			int valueStart = colonIdx + 1;
+			while (valueStart < end && isOptionalWhitespace(string.charAt(valueStart))) {
+				valueStart++;
+			}
+			int valueEnd = end;
+			while (valueEnd > valueStart && isOptionalWhitespace(string.charAt(valueEnd - 1))) {
+				valueEnd--;
+			}
+			headers.add(name, string.substring(valueStart, valueEnd));
+		}
+
+		private static boolean isOptionalWhitespace(char c) {
+			return c == ' ' || c == '\t';
 		}
 
 		@Override

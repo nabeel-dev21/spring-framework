@@ -5,6 +5,7 @@
 
 package org.springframework.http.converter.multipart;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -59,6 +60,38 @@ class MultipartParserTests {
 		listener.assertHeader(headers -> assertThat(headers.isEmpty()).isTrue())
 				.assertBodyChunk("a")
 				.assertComplete();
+	}
+
+	@Test
+	void bareLineFeedInPartHeadersIsRejected() {
+		TestListener listener = new TestListener();
+		String body = "--boundary\r\n" +
+				"Content-Disposition: form-data; name=\"test\"\nContent-Type: text/plain\r\n" +
+				"\r\n" +
+				"content" +
+				"\r\n--boundary--\r\n";
+
+		assertThatThrownBy(() -> parseBody(body, "boundary", listener))
+				.isInstanceOf(HttpMessageConversionException.class)
+				.hasMessage("Invalid header: line contains a bare LF");
+
+		assertThat(listener.error).isInstanceOf(HttpMessageConversionException.class);
+	}
+
+	@Test
+	void partHeaderLineWithoutSeparatorIsRejected() {
+		TestListener listener = new TestListener();
+		String body = "--boundary\r\n" +
+				"not-a-header-line\r\n" +
+				"\r\n" +
+				"content" +
+				"\r\n--boundary--\r\n";
+
+		assertThatThrownBy(() -> parseBody(body, "boundary", listener))
+				.isInstanceOf(HttpMessageConversionException.class)
+				.hasMessage("Invalid header: no name/value separator found in \"not-a-header-line\"");
+
+		assertThat(listener.error).isInstanceOf(HttpMessageConversionException.class);
 	}
 
 	@Test
@@ -190,6 +223,11 @@ class MultipartParserTests {
 		try (InputStream input = createStream(fileName)) {
 			MultipartParser.parse(input, boundary.getBytes(UTF_8), UTF_8, 10 * 1024, 4 * 1024, listener);
 		}
+	}
+
+	private void parseBody(String body, String boundary, MultipartParser.PartListener listener) {
+		InputStream input = new ByteArrayInputStream(body.getBytes(UTF_8));
+		MultipartParser.parse(input, boundary.getBytes(UTF_8), UTF_8, 10 * 1024, 4 * 1024, listener);
 	}
 
 
